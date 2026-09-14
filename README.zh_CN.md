@@ -8,6 +8,14 @@ Codex 生成最终答复时显示 6 秒钟的 **任务已完成** 提示。首�
 
 当前发布版本：**0.1.0**。
 
+## 下载与安装
+
+- [下载小助手固件和 macOS 桥接程序](https://github.com/zt20/codex-usage-ai-passport/releases/tag/v0.1.0)
+- [查看完整中文安装、蓝牙配对与排障说明](docs/codex-usage-installation.zh_CN.md)
+
+本功能必须同时安装小助手固件和电脑桥接程序。Type-C 只用于刷固件；日常用量、
+任务数与完成提醒都由电脑桥接程序通过加密蓝牙同步。
+
 实现基于仓库的 `demo/claude-buddy-port` 参考分支，保留了有界状态机、像素 UI、
 加密 Nordic UART BLE、绑定与自动重连。新增的本机桥接器负责把 Codex 数据转换成
 设备协议。
@@ -44,7 +52,11 @@ idf.py flash monitor
 
 ## 运行本机桥接器
 
-请先安装并登录 Codex CLI，建议使用 Python 3.10 或更高版本：
+普通用户请从发布页下载 `Codex-Bridge-macOS-v0.1.0.zip`，解压后右键打开
+`macOS/install.command`；安装器会立即启动桥接程序并设置登录后自动运行。
+
+开发者也可以从源码手动运行。请先安装并登录 Codex CLI，建议使用 Python 3.10
+或更高版本：
 
 ```bash
 python3 -m venv .venv
