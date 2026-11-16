@@ -11,6 +11,7 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -54,8 +55,22 @@ static void buddy_sound_task(void *context)
         bool success = true;
 
         (void)ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+        if (bsp_audio_wake() != ESP_OK) {
+            ESP_LOGW("buddy_sound", "Audio wake failed; visual alert remains active");
+            continue;
+        }
+        // Cold codec/analog paths need clocks before a short notification. Feed
+        // 200 ms of silence first so the 200 ms audible tone is never the pre-roll.
+        bsp_audio_set_volume(0);
+        memset(pcm, 0, sizeof(pcm));
+        for (size_t offset = 0; offset < BUDDY_SOUND_SAMPLE_RATE / 5U; offset += 160U) {
+            if (bsp_audio_write(pcm, sizeof(pcm)) != ESP_OK) {
+                success = false;
+                break;
+            }
+        }
         bsp_audio_set_volume(BUDDY_SOUND_VOLUME);
-        for (size_t offset = 0; offset < BUDDY_SOUND_SAMPLE_COUNT; offset += 160U) {
+        for (size_t offset = 0; success && offset < BUDDY_SOUND_SAMPLE_COUNT; offset += 160U) {
             for (size_t i = 0; i < 160U; ++i) {
                 pcm[i] = buddy_sound_sample(offset + i);
             }
@@ -67,6 +82,8 @@ static void buddy_sound_task(void *context)
         /* BSP queues 6 x 240 frames: allow the 90 ms DMA tail to finish. */
         vTaskDelay(pdMS_TO_TICKS(100));
         bsp_audio_set_volume(0);
+        esp_err_t sleep_error = bsp_audio_sleep();
+        ESP_LOGI("buddy_sound", "Audio standby: %s", esp_err_to_name(sleep_error));
         if (success) {
             ESP_LOGI("buddy_sound", "Completion sound played");
             ESP_LOGI("buddy_sound", "Task stack headroom: %u",
@@ -85,9 +102,11 @@ static void buddy_sound_init(void)
         return;
     }
     bsp_audio_set_volume(0);
+    esp_err_t sleep_error = bsp_audio_sleep();
+    ESP_LOGI("buddy_sound", "Audio standby: %s", esp_err_to_name(sleep_error));
     /* Codec I/O and newlib logging exceed the original 3 KB stack on this target. */
     /* Stay above LVGL (priority 4) while blocked I2S writes yield the CPU. */
-    if (xTaskCreate(buddy_sound_task, "buddy_sound", 4096, NULL, 6,
+    if (xTaskCreate(buddy_sound_task, "buddy_sound", 6144, NULL, 6,
                     &s_sound_task) != pdPASS) {
         ESP_LOGW("buddy_sound", "Sound task creation failed");
     }
@@ -883,13 +902,10 @@ static bool buddy_execute_action(buddy_state_t *state, const buddy_action_t *act
     if (action->completion_sound && s_sound_task != NULL) {
         xTaskNotifyGive(s_sound_task);
     }
-    if (action->type == BUDDY_ACTION_DISPLAY_BACKLIGHT) {
-        bsp_display_backlight(action->brightness_percent);
-        memset(result_event, 0, sizeof(*result_event));
-        return false;
-    }
-    if (action->type == BUDDY_ACTION_SCREEN_OFF) {
-        bsp_display_backlight(0);
+    if (action->type == BUDDY_ACTION_DISPLAY_BACKLIGHT ||
+        action->type == BUDDY_ACTION_SCREEN_OFF) {
+        // The rendering owner applies panel/backlight changes together under
+        // the LVGL lock, after the latest state has been rendered.
         memset(result_event, 0, sizeof(*result_event));
         return false;
     }
@@ -961,17 +977,48 @@ static void buddy_publish_rendered_view(const buddy_ui_snapshot_t *snapshot)
 static void buddy_render(buddy_state_t *state, const buddy_action_t *action, uint64_t now_ms)
 {
     static buddy_ui_snapshot_t snapshot;
+    static bool blanked;
+    static uint8_t applied_brightness = 100;
 
-    buddy_state_snapshot(state, &snapshot);
-    if (!bsp_lvgl_lock(1000)) {
+    if (state->screen_off && blanked) return;
+    if (!bsp_lvgl_lock(1000)) return;
+    if (state->screen_off) {
+        bsp_display_backlight(0);
+        applied_brightness = 0;
+        esp_err_t error = bsp_display_set_enabled(false);
+        if (error == ESP_OK) {
+            blanked = true;
+            ESP_LOGI(TAG, "Display idle: panel and backlight off; BLE remains active");
+        } else {
+            ESP_LOGW(TAG, "Display blank failed: %s", esp_err_to_name(error));
+        }
+        bsp_lvgl_unlock();
         return;
     }
+    bool waking = blanked;
+    if (waking) {
+        esp_err_t error = bsp_display_set_enabled(true);
+        if (error != ESP_OK) {
+            bsp_lvgl_unlock();
+            ESP_LOGW(TAG, "Display wake failed: %s", esp_err_to_name(error));
+            return;
+        }
+        blanked = false;
+    }
+    buddy_state_snapshot(state, &snapshot);
     buddy_ui_render(&snapshot);
     if (action->type == BUDDY_ACTION_UI_SCROLL) {
         buddy_ui_scroll(action->scroll_delta);
     }
     buddy_ui_tick(now_ms);
+    uint8_t brightness = (uint8_t)(20U + state->brightness_level * 20U);
+    if (waking || brightness != applied_brightness) {
+        // Retained frame memory is valid before the light comes back on.
+        bsp_display_backlight(brightness);
+        applied_brightness = brightness;
+    }
     bsp_lvgl_unlock();
+    if (waking) ESP_LOGI(TAG, "Display awake: running=%u waiting=%u", state->running, state->waiting);
     buddy_publish_rendered_view(&snapshot);
 }
 
@@ -1029,6 +1076,7 @@ static void buddy_app_task(void *context)
     (void)context;
     (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     buddy_state_init(&state, &s_initial_settings);
+    state.last_display_activity_ms = buddy_now_ms();
     buddy_sample_battery(&state);
 
     for (;;) {
@@ -1150,6 +1198,15 @@ void app_main(void)
         return;
     }
     bsp_display_backlight(100);
+    const esp_pm_config_t power = {
+        .max_freq_mhz = 160, .min_freq_mhz = 40, .light_sleep_enable = false,
+    };
+    err = esp_pm_configure(&power);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Dynamic frequency scaling unavailable: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "CPU DFS enabled: 40-160 MHz; automatic light sleep disabled");
+    }
     s_initial_battery_available = bsp_battery_init() == ESP_OK;
     buddy_sound_init();
 

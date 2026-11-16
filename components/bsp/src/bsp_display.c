@@ -60,7 +60,7 @@ static void backlight_init(void) {
         .timer_num       = BSP_BL_LEDC_TIMER,
         .duty_resolution = BSP_BL_LEDC_RES,
         .freq_hz         = BSP_BL_LEDC_FREQ_HZ,
-        .clk_cfg         = LEDC_AUTO_CLK,
+        .clk_cfg         = LEDC_USE_XTAL_CLK, // Stable backlight PWM during CPU DFS.
     };
     esp_err_t e = ledc_timer_config(&t);
     if (e != ESP_OK) { ESP_LOGE(TAG, "ledc_timer_config 失败: %s", esp_err_to_name(e)); return; }
@@ -146,4 +146,11 @@ void bsp_display_backlight(uint8_t percent) {
     uint32_t duty = (max_duty * percent) / 100u;
     ledc_set_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL, duty);
     ledc_update_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL);
+}
+
+// Runtime blanking is reversible. The caller must hold the LVGL lock so no
+// display command races a flush. Frame memory is retained; no SLEEP IN/reset.
+esp_err_t bsp_display_set_enabled(bool enabled) {
+    if (!s_panel) return ESP_ERR_INVALID_STATE;
+    return esp_lcd_panel_disp_on_off(s_panel, enabled);
 }

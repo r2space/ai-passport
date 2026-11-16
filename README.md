@@ -7,7 +7,7 @@ remaining share of the 7-day Codex limit as a single progress bar, shows the
 number of active tasks, and displays a six-second **Task complete** celebration when a root-conversation turn
 finishes. The top-right status area also shows the battery level.
 
-Upstream release: **0.1.0**. Development build: **0.1.0-notify1**.
+Upstream release: **0.1.0**. Development build: **0.1.0-idle2**.
 
 The weekly window is selected by its 10080-minute duration in either API slot;
 missing weekly data shows `--`. The five-hour panel is removed from the home and info pages.
@@ -116,6 +116,23 @@ it with `Ctrl+C`.
 - `DOWN`: scroll or change the current sub-page.
 - Hold `OK`: open the menu.
 - Settings → Unpair: delete the BLE bond after on-device confirmation.
+
+## Idle power
+
+The display blanks after 10 seconds without a meaningful event: both backlight
+and panel display are disabled, and application rendering pauses. Task-count,
+weekly-usage, approval and connection changes, new completion alerts, and button
+presses restore the display for another 10 seconds. Clock/token updates and
+unchanged heartbeats do not wake it. The first button press while blanked only
+wakes the display; it cannot approve a hidden prompt or navigate a hidden menu.
+
+The audio worker wakes ES8311 and clocks 200 ms of silence before each tone,
+then verifies codec/I2S standby afterwards, including startup with no playback. CPU DFS uses 40–160 MHz and BLE
+controller modem sleep uses the main crystal. System automatic Light-sleep and
+Deep-sleep stay disabled while timely BLE notifications are needed. Wake restores
+the panel before backlight; runtime blanking never uses the terminal deep-sleep
+helper. Pairing, weekly usage and the 50% tone remain unchanged. Board-current
+and battery-runtime savings require instrument measurements.
 
 ## Tests
 

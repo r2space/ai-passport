@@ -83,3 +83,22 @@ add_executable(test_buddy_text_layout test_buddy_text_layout.c
 target_include_directories(test_buddy_text_layout PRIVATE ../main)
 target_compile_options(test_buddy_text_layout PRIVATE -Wall -Wextra -Werror)
 add_test(NAME buddy_text_layout COMMAND test_buddy_text_layout)
+
+add_executable(test_buddy_idle test_buddy_idle.c ../main/buddy_state.c
+               ../main/buddy_protocol.c ${BUDDY_CJSON_SOURCE})
+target_include_directories(test_buddy_idle PRIVATE ../main ${BUDDY_CJSON_DIR})
+target_compile_options(test_buddy_idle PRIVATE -Wall -Wextra -Werror)
+add_test(NAME buddy_idle COMMAND test_buddy_idle)
+
+add_executable(test_bsp_audio_recovery test_bsp_audio_recovery.c
+               ../components/bsp/src/bsp_es8311_sleep_check.c)
+target_include_directories(test_bsp_audio_recovery PRIVATE audio_stubs
+                           ../components/bsp/include ../components/bsp/src)
+target_compile_options(test_bsp_audio_recovery PRIVATE -Wall -Wextra -Werror)
+add_test(NAME bsp_audio_recovery COMMAND test_bsp_audio_recovery)
+
+add_executable(test_bsp_es8311_sleep_check test_bsp_es8311_sleep_check.c
+               ../components/bsp/src/bsp_es8311_sleep_check.c)
+target_include_directories(test_bsp_es8311_sleep_check PRIVATE ../components/bsp/src)
+target_compile_options(test_bsp_es8311_sleep_check PRIVATE -Wall -Wextra -Werror)
+add_test(NAME bsp_es8311_sleep_check COMMAND test_bsp_es8311_sleep_check)

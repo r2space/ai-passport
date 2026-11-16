@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#define BUDDY_DISPLAY_IDLE_MS 10000ULL
 #define BUDDY_HEART_ANIMATION_MS 5000
 #define BUDDY_CELEBRATION_ANIMATION_MS 6000
 #define BUDDY_HEARTBEAT_TIMEOUT_MS 30000
@@ -280,7 +281,9 @@ static void buddy_normal_click(buddy_state_t *state, buddy_key_t key,
             }
             state->menu_open = false;
         }
-        buddy_set_ui_refresh(action);
+        if (action == NULL || action->type != BUDDY_ACTION_SCREEN_OFF) {
+            buddy_set_ui_refresh(action);
+        }
         return;
     }
     if (state->page == BUDDY_PAGE_SETTINGS) {
@@ -466,6 +469,61 @@ static void buddy_apply_permission_result(buddy_state_t *state,
     buddy_set_ui_refresh(action);
 }
 
+
+// Only user-visible changes count as activity. Routine heartbeats, token/time
+// updates and repeated completion checkpoints must leave an idle display off.
+static bool buddy_display_activity(const buddy_state_t *state, const buddy_event_t *event)
+{
+    const buddy_heartbeat_t *heartbeat = &event->heartbeat;
+    const buddy_prompt_t *prompt = event->type == BUDDY_EVENT_HEARTBEAT
+                                      ? &heartbeat->prompt : &event->prompt;
+    switch (event->type) {
+    case BUDDY_EVENT_HEARTBEAT:
+        if (state->connected != heartbeat->connected || state->running != heartbeat->running ||
+            state->waiting != heartbeat->waiting ||
+            state->codex_usage.available != heartbeat->codex_usage.available ||
+            state->codex_usage.primary_used_percent != heartbeat->codex_usage.primary_used_percent ||
+            state->codex_usage.secondary_used_percent != heartbeat->codex_usage.secondary_used_percent) {
+            return true;
+        }
+        // An unchanged prompt in the periodic snapshot is not new activity.
+        if (!heartbeat->connected) return false;
+        /* fall through */
+    case BUDDY_EVENT_PROMPT:
+        return prompt->connected && buddy_prompt_id_is_valid(prompt) &&
+               !buddy_prompt_was_attempted(state, prompt) &&
+               (strcmp(state->prompt.id, prompt->id) != 0 ||
+                strcmp(state->prompt.tool, prompt->tool) != 0 ||
+                strcmp(state->prompt.hint, prompt->hint) != 0);
+    case BUDDY_EVENT_KEY_CLICK:
+    case BUDDY_EVENT_KEY_LONG:
+        return event->key != BUDDY_KEY_NONE;
+    case BUDDY_EVENT_BLE_CONNECTED:
+        return !state->ble_connected ||
+               state->ble_connection_generation != event->ble.connection_generation;
+    case BUDDY_EVENT_BLE_DISCONNECTED:
+        return state->ble_connected || state->connected;
+    case BUDDY_EVENT_BLE_ENCRYPTION:
+        return state->ble_connection_generation == event->ble.connection_generation &&
+               state->ble_encrypted != event->ble.secure;
+    case BUDDY_EVENT_BLE_PASSKEY:
+        return state->ble_connection_generation == event->ble.connection_generation &&
+               (!state->passkey_visible || state->passkey != event->ble.passkey);
+    case BUDDY_EVENT_UNPAIR_CONFIRMATION:
+        return state->confirmation == BUDDY_CONFIRM_NONE;
+    case BUDDY_EVENT_NAME:
+        return strcmp(state->name, event->command.value) != 0;
+    case BUDDY_EVENT_OWNER:
+        return strcmp(state->owner, event->command.value) != 0;
+    case BUDDY_EVENT_STATUS:
+        return strcmp(state->message, event->command.value) != 0;
+    case BUDDY_EVENT_BOND_DELETE_RESULT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void buddy_state_init(buddy_state_t *state, const buddy_settings_snapshot_t *settings)
 {
     if (state == NULL) {
@@ -497,7 +555,22 @@ void buddy_state_reduce(buddy_state_t *state, const buddy_event_t *event,
         return;
     }
 
+    bool was_connected = state->connected;
+    buddy_permission_delivery_t previous_delivery = state->permission_delivery;
+    bool activity = buddy_display_activity(state, event);
     buddy_clear_stale_prompt(state, now_ms);
+    activity = activity || was_connected != state->connected;
+
+    // The first press while blanked only wakes: never accidentally approve or
+    // enter a menu with a button action that was not visible to the user.
+    if (state->screen_off && (event->type == BUDDY_EVENT_KEY_CLICK ||
+                              event->type == BUDDY_EVENT_KEY_LONG)) {
+        state->screen_off = false;
+        state->last_display_activity_ms = now_ms;
+        buddy_set_ui_refresh(action);
+        buddy_refresh_character(state, now_ms);
+        return;
+    }
 
     switch (event->type) {
     case BUDDY_EVENT_HEARTBEAT:
@@ -606,15 +679,6 @@ void buddy_state_reduce(buddy_state_t *state, const buddy_event_t *event,
         buddy_apply_permission_result(state, &event->permission_result, now_ms, action);
         break;
     case BUDDY_EVENT_KEY_CLICK:
-        if (state->screen_off) {
-            state->screen_off = false;
-            if (action != NULL) {
-                action->type = BUDDY_ACTION_DISPLAY_BACKLIGHT;
-                action->brightness_percent =
-                    (uint8_t)(20U + state->brightness_level * 20U);
-            }
-            break;
-        }
         if (state->confirmation != BUDDY_CONFIRM_NONE && event->key == BUDDY_KEY_OK) {
             buddy_confirmation_t confirmation = state->confirmation;
             bool acknowledge = state->confirmation_acknowledge;
@@ -667,6 +731,18 @@ void buddy_state_reduce(buddy_state_t *state, const buddy_event_t *event,
         break;
     }
 
+    activity = activity || previous_delivery != state->permission_delivery ||
+               (action != NULL && action->completion_sound);
+    if (activity) {
+        state->last_display_activity_ms = now_ms;
+        // Preserve an explicit menu request to turn the screen off.
+        if (action == NULL || action->type != BUDDY_ACTION_SCREEN_OFF) {
+            state->screen_off = false;
+        }
+    } else if (!state->screen_off && now_ms >= state->last_display_activity_ms &&
+               now_ms - state->last_display_activity_ms >= BUDDY_DISPLAY_IDLE_MS) {
+        state->screen_off = true;
+    }
     buddy_refresh_character(state, now_ms);
 }
 
