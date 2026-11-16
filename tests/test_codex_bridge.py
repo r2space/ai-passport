@@ -83,17 +83,17 @@ class CodexBridgeTests(unittest.TestCase):
                     '{"type":"response_item","payload":{"type":"message",'
                     '"role":"user","content":[{"private":"ignored"}]}}\n'
                 )
-            self.assertTrue(watcher.poll())
-            self.assertTrue(watcher.running)
+            self.assertFalse(watcher.poll())
+            self.assertFalse(watcher.running)
             with session.open("a", encoding="utf-8") as stream:
                 stream.write(
                     '{"type":"response_item","payload":{"type":"message",'
                     '"role":"assistant","phase":"final_answer",'
                     '"content":[{"private":"ignored"}]}}\n'
                 )
-            self.assertTrue(watcher.poll())
+            self.assertFalse(watcher.poll())
             self.assertFalse(watcher.running)
-            self.assertEqual(watcher.completion_sequence, 1)
+            self.assertEqual(watcher.completion_sequence, 0)
 
     def test_usage_cache_keeps_last_valid_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

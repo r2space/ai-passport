@@ -4,10 +4,10 @@
 
 This firmware turns FoloToy AI Passport into a private Codex desk companion. It shows the
 remaining share of the 7-day Codex limit as a single progress bar, shows the
-number of active tasks, and displays a six-second **Task complete** celebration when Codex
-writes a final answer. The top-right status area also shows the battery level.
+number of active tasks, and displays a six-second **Task complete** celebration when a root-conversation turn
+finishes. The top-right status area also shows the battery level.
 
-Upstream release: **0.1.0**. Development build: **0.1.0-weekly1**.
+Upstream release: **0.1.0**. Development build: **0.1.0-notify1**.
 
 The weekly window is selected by its 10080-minute duration in either API slot;
 missing weekly data shows `--`. The five-hour panel is removed from the home and info pages.
@@ -41,13 +41,28 @@ Keep `dependencies.lock` tracked; build output, virtual environments and logs st
 ```text
 Codex app-server ── rate-limit snapshot ─┐
                                          ├─ local Python bridge ── encrypted BLE ── Passport
-~/.codex/sessions ─ message metadata ────┘
+~/.codex/sessions ─ lifecycle metadata ────┘
 ```
 
-The bridge asks the local Codex app-server for `account/rateLimits/read`. It reads only
-JSONL record type, role, and phase from local session files to detect a user turn and a
-`final_answer`; it never sends prompt or answer content to the device. The bridge does not
-read or copy Codex authentication tokens.
+The bridge asks the local Codex app-server for `account/rateLimits/read`. Its
+session watcher uses only source, conversation/turn IDs, timestamps and lifecycle
+event types. It never forwards prompt or answer content or reads authentication tokens.
+
+### Completion rule
+
+- One alert per root-conversation turn: a `task_complete` must match a known
+  `task_started`, and the conversation/turn pair is deduplicated across rollout files.
+- Subagents, nested turns, aborted/failed turns, message `final_answer` phases and
+  repeated terminal events do not generate completion alerts.
+- Startup and reconnect synchronize state silently; offline history is not replayed.
+- Different conversations finish independently. Other conversations may still be
+  running when one alert sounds; the toast displays the running count.
+- Multiple completions are sent as separate acknowledged events and queued as separate tones.
+
+Use the bridge and firmware from this branch together. Only explicit
+`codex.completion_event=true` packets with a new sequence trigger the toast and tone;
+ordinary heartbeats only synchronize the sequence. Older bridges without this flag
+can still show usage but do not generate completion alerts on this firmware.
 
 Codex reports usage as percentages rather than absolute message counts, so the screen
 shows `LEFT = 100 - usedPercent` for the available weekly window. If the service is temporarily

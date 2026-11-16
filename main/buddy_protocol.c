@@ -247,6 +247,11 @@ static bool buddy_parse_codex_usage(const cJSON *object, buddy_codex_usage_t *us
         !buddy_copy_utf8(usage->plan, sizeof(usage->plan), plan, plan_length, NULL)) {
         return false;
     }
+    const cJSON *completion_event = cJSON_GetObjectItemCaseSensitive(codex, "completion_event");
+    if (completion_event != NULL && !cJSON_IsBool(completion_event)) {
+        return false;
+    }
+    usage->completion_event = cJSON_IsTrue(completion_event);
     usage->present = true;
     return true;
 }

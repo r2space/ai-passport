@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,6 @@ HEARTBEAT_SECONDS = 10.0
 USAGE_REFRESH_SECONDS = 60.0
 TASK_REFRESH_SECONDS = 2.0
 USAGE_CACHE_FILE = "ai-passport-usage-cache.json"
-SESSION_PRIME_BYTES = 2 * 1024 * 1024
 SESSION_ACTIVE_LOOKBACK_SECONDS = 2 * 60 * 60
 
 
@@ -115,7 +115,9 @@ class CodexAppServer:
                 if not isinstance(thread, dict):
                     continue
                 status = thread.get("status")
-                if isinstance(status, dict) and status.get("type") == "active":
+                if (not is_subagent_source(thread.get("source"))
+                        and not is_subagent_source(thread.get("threadSource"))
+                        and isinstance(status, dict) and status.get("type") == "active"):
                     count += 1
             next_cursor = result.get("nextCursor")
             if not isinstance(next_cursor, str) or not next_cursor:
@@ -257,90 +259,101 @@ def save_cached_usage(path: Path, usage: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def is_subagent_source(source: Any) -> bool:
+    if isinstance(source, str):
+        return source.replace("_", "").replace("-", "").lower() == "subagent"
+    return isinstance(source, dict) and any(is_subagent_source(key) for key in source)
+
+
 class SessionWatcher:
-    """Watch only message metadata in Codex JSONL session files."""
+    """Observe root-conversation lifecycle records, never message text or phases."""
 
     def __init__(self, codex_home: Path) -> None:
         self.sessions = codex_home / "sessions"
         self.state_path = codex_home / "ai-passport-bridge-state.json"
         self.offsets: dict[Path, int] = {}
         self.thread_ids: dict[Path, str] = {}
-        self.active_turns: set[tuple[Path, str]] = set()
-        self.active_legacy_sessions: set[Path] = set()
-        self.event_sessions: set[Path] = set()
+        self.ignored_sessions: set[Path] = set()
+        self.active_turns: set[tuple[str, str]] = set()
+        self.settled_turns: set[tuple[str, str]] = set()
+        self.started_at = time.time()
         self.completion_sequence = self._load_sequence()
-        recent_cutoff = time.time() - SESSION_ACTIVE_LOOKBACK_SECONDS
+        recent_cutoff = self.started_at - SESSION_ACTIVE_LOOKBACK_SECONDS
         for path in self._files():
             try:
                 stat = path.stat()
                 self.offsets[path] = stat.st_size
                 self._read_thread_id(path)
-                if stat.st_mtime >= recent_cutoff:
+                if path not in self.ignored_sessions and stat.st_mtime >= recent_cutoff:
                     self._prime(path)
             except OSError:
                 pass
 
     @property
     def running_count(self) -> int:
-        active_threads = {
-            self.thread_ids.get(path, str(path)) for path, _turn_id in self.active_turns
-        }
-        active_threads.update(
-            self.thread_ids.get(path, str(path))
-            for path in self.active_legacy_sessions - self.event_sessions
-        )
-        return len(active_threads)
+        return len({thread_id for thread_id, _turn_id in self.active_turns})
 
     @property
     def running(self) -> bool:
         return self.running_count > 0
+
+    def _metadata(self, path: Path, payload: dict[str, Any]) -> None:
+        thread_id = payload.get("id")
+        if isinstance(thread_id, str) and thread_id:
+            self.thread_ids[path] = thread_id
+        if is_subagent_source(payload.get("source")):
+            self.ignored_sessions.add(path)
 
     def _read_thread_id(self, path: Path) -> None:
         try:
             with path.open("r", encoding="utf-8") as stream:
                 for _index, line in zip(range(32), stream):
                     record = json.loads(line)
-                    if record.get("type") != "session_meta":
+                    if not isinstance(record, dict):
                         continue
-                    payload = record.get("payload")
-                    thread_id = payload.get("id") if isinstance(payload, dict) else None
-                    if isinstance(thread_id, str) and thread_id:
-                        self.thread_ids[path] = thread_id
-                    return
+                    if record.get("type") == "session_meta":
+                        payload = record.get("payload")
+                        if isinstance(payload, dict):
+                            self._metadata(path, payload)
+                        return
         except (OSError, UnicodeError, json.JSONDecodeError):
             return
 
     def _prime(self, path: Path) -> None:
-        """Recover recent live state while ignoring old abandoned sessions."""
-        size = self.offsets.get(path, 0)
-        start = max(0, size - SESSION_PRIME_BYTES)
+        # Replay recent root-session metadata without alerting. Reading from the
+        # start also recovers a long-running turn whose start is far behind EOF.
+        self.offsets[path] = 0
+        self._read_appended(path, notify=False)
+
+    def _read_appended(self, path: Path, notify: bool) -> bool:
+        changed = False
+        offset = self.offsets.get(path, 0)
+        if path.stat().st_size < offset:
+            offset = 0
         with path.open("rb") as stream:
-            stream.seek(start)
-            if start:
-                stream.readline()
-            for raw_line in stream:
+            stream.seek(offset)
+            while True:
+                raw = stream.readline()
+                if not raw or not raw.endswith(b"\n"):
+                    break  # retain a partial record for the next poll
+                offset = stream.tell()
                 try:
-                    self._consume(path, raw_line.decode("utf-8"), historical=True)
+                    changed = self._consume(path, raw.decode("utf-8"), historical=not notify) or changed
                 except UnicodeError:
                     continue
+        self.offsets[path] = offset
+        return changed
 
-    def poll(self) -> bool:
-        """Read appended records. Return True when display state changed."""
+    def poll(self, notify: bool = True) -> bool:
         changed = False
         for path in self._files():
             try:
-                size = path.stat().st_size
-                offset = self.offsets.get(path, 0)
                 if path not in self.thread_ids:
                     self._read_thread_id(path)
-                if size < offset:
-                    offset = 0
-                with path.open("r", encoding="utf-8") as stream:
-                    stream.seek(offset)
-                    for line in stream:
-                        changed = self._consume(path, line) or changed
-                    self.offsets[path] = stream.tell()
-            except (OSError, UnicodeError):
+                if path in self.ignored_sessions:
+                    continue
+                changed = self._read_appended(path, notify) or changed
+            except OSError:
                 continue
         return changed
 
@@ -349,49 +362,51 @@ class SessionWatcher:
             record = json.loads(line)
         except json.JSONDecodeError:
             return False
+        if not isinstance(record, dict):
+            return False
         payload = record.get("payload")
-        if record.get("type") == "event_msg" and isinstance(payload, dict):
-            event_type = payload.get("type")
-            turn_id = payload.get("turn_id")
-            if event_type in ("task_started", "task_complete") and isinstance(turn_id, str):
-                before = self.running_count
-                self.event_sessions.add(path)
-                self.active_legacy_sessions.discard(path)
-                key = (path, turn_id)
-                if event_type == "task_started":
-                    self.active_turns.add(key)
-                else:
-                    thread_id = self.thread_ids.get(path, str(path))
-                    self.active_turns = {
-                        active
-                        for active in self.active_turns
-                        if self.thread_ids.get(active[0], str(active[0])) != thread_id
-                    }
-                    if not historical:
-                        self.completion_sequence += 1
-                        self._save_sequence()
-                return self.running_count != before or (
-                    event_type == "task_complete" and not historical
-                )
-        if record.get("type") != "response_item":
+        if not isinstance(payload, dict):
             return False
-        if not isinstance(payload, dict) or payload.get("type") != "message":
+        if record.get("type") == "session_meta":
+            self._metadata(path, payload)
             return False
-        if path in self.event_sessions:
+        if path in self.ignored_sessions or record.get("type") != "event_msg":
             return False
-        role = payload.get("role")
-        phase = payload.get("phase")
-        if role == "user":
-            before = self.running_count
-            self.active_legacy_sessions.add(path)
-            return self.running_count != before
-        if role == "assistant" and phase == "final_answer":
-            self.active_legacy_sessions.discard(path)
-            if not historical:
+        event_type = payload.get("type")
+        turn_id = payload.get("turn_id")
+        if event_type not in ("task_started", "task_complete", "turn_aborted", "task_failed", "turn_failed"):
+            return False
+        if not isinstance(turn_id, str) or not turn_id:
+            return False
+        root_turn_id = payload.get("root_turn_id")
+        if isinstance(root_turn_id, str) and root_turn_id and root_turn_id != turn_id:
+            return False
+        # A copied/resumed log can be discovered after startup. Its old records
+        # rebuild state but must not become new completion notifications.
+        stamp = record.get("timestamp")
+        if isinstance(stamp, str):
+            try:
+                date = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                historical = historical or (date.tzinfo is not None and date.timestamp() < self.started_at)
+            except ValueError:
+                pass
+        thread_id = self.thread_ids.get(path, str(path))
+        key = (thread_id, turn_id)
+        before = self.running_count
+        if event_type == "task_started":
+            if key not in self.settled_turns:
+                self.active_turns.add(key)
+        else:
+            was_active = key in self.active_turns
+            self.active_turns.discard(key)
+            self.settled_turns.add(key)
+            if event_type == "task_complete" and was_active and not historical:
                 self.completion_sequence += 1
                 self._save_sequence()
-            return not historical
-        return False
+                label = self.thread_ids.get(path, "unknown")[-8:]
+                print(f"Conversation task completed: thread={label}, turn={turn_id[-8:]}", flush=True)
+                return True
+        return self.running_count != before
 
     def _files(self) -> list[Path]:
         try:
@@ -408,16 +423,13 @@ class SessionWatcher:
 
     def _save_sequence(self) -> None:
         temporary = self.state_path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps({"completionSequence": self.completion_sequence}) + "\n",
-            encoding="utf-8",
-        )
+        temporary.write_text(json.dumps({"completionSequence": self.completion_sequence}) + "\n", encoding="utf-8")
         temporary.replace(self.state_path)
 
 
 def heartbeat_payload(
     usage: dict[str, Any], watcher: SessionWatcher, running_count: int | None = None,
-    completed: bool = False,
+    completed: bool = False, completion_sequence: int | None = None,
 ) -> bytes:
     primary = usage.get("primary", {})
     secondary = usage.get("secondary", {})
@@ -442,22 +454,34 @@ def heartbeat_payload(
             "secondary_used": secondary.get("used", 0),
             "secondary_window": secondary.get("duration", 0),
             "secondary_reset": secondary.get("reset", 0),
-            "completion_seq": watcher.completion_sequence,
+            "completion_seq": watcher.completion_sequence if completion_sequence is None else completion_sequence,
+            "completion_event": completed,
             "available": bool(usage.get("available")),
         },
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
 
 
-async def send_payload(client: Any, payload: bytes) -> None:
+async def send_payload(client: Any, payload: bytes, *, confirmed: bool = False) -> None:
     characteristic = client.services.get_characteristic(NUS_RX_UUID)
     if characteristic is None:
         raise RuntimeError("Codex Buddy RX characteristic is missing")
-    chunk_size = max(20, int(getattr(characteristic, "max_write_without_response_size", 20)))
+    chunk_size = 20 if confirmed else max(20, int(getattr(characteristic, "max_write_without_response_size", 20)))
     for offset in range(0, len(payload), chunk_size):
         await client.write_gatt_char(
-            NUS_RX_UUID, payload[offset : offset + chunk_size], response=False
+            NUS_RX_UUID, payload[offset : offset + chunk_size], response=confirmed
         )
+
+
+async def send_completion_notifications(client: Any, usage: dict[str, Any],
+                                        watcher: SessionWatcher, running_count: int,
+                                        previous_sequence: int) -> int:
+    last = watcher.completion_sequence
+    for sequence in range(previous_sequence + 1, last + 1):
+        await send_payload(client, heartbeat_payload(usage, watcher, running_count,
+                           completed=True, completion_sequence=sequence), confirmed=True)
+        print(f"Completion reminder accepted by device: sequence={sequence}", flush=True)
+    return last
 
 
 async def find_device(device_name: str | None) -> Any:
@@ -519,6 +543,8 @@ async def bridge_loop(args: argparse.Namespace) -> None:
                 print(f"Connecting to {device.name or device.address}…", flush=True)
                 async with BleakClient(device, pair=True, timeout=60.0) as client:
                     await client.start_notify(NUS_TX_UUID, lambda _sender, _data: None)
+                    watcher.poll(notify=False)  # reconnect is a silent baseline
+                    previous_sequence = watcher.completion_sequence
                     print("Connected. Codex usage and completion alerts are live.", flush=True)
                     timezone_offset = int(
                         time.mktime(time.localtime()) - time.mktime(time.gmtime())
@@ -531,11 +557,9 @@ async def bridge_loop(args: argparse.Namespace) -> None:
                     last_heartbeat = 0.0
                     last_usage = 0.0
                     last_task_refresh = 0.0
-                    previous_sequence = watcher.completion_sequence
                     while client.is_connected:
                         changed = watcher.poll()
                         completed = watcher.completion_sequence > previous_sequence
-                        previous_sequence = watcher.completion_sequence
                         now = time.monotonic()
                         if roll_expired_usage_windows(usage):
                             save_cached_usage(usage_cache_path, usage)
@@ -570,10 +594,13 @@ async def bridge_loop(args: argparse.Namespace) -> None:
                                     flush=True,
                                 )
                             last_task_refresh = now
+                        if completed:
+                            previous_sequence = await send_completion_notifications(
+                                client, usage, watcher, running_count, previous_sequence)
                         if changed or now - last_heartbeat >= HEARTBEAT_SECONDS:
                             await send_payload(
                                 client,
-                                heartbeat_payload(usage, watcher, running_count, completed),
+                                heartbeat_payload(usage, watcher, running_count),
                             )
                             last_heartbeat = now
                         await asyncio.sleep(1.0)

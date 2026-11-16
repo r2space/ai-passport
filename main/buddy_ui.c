@@ -451,8 +451,10 @@ static void draw_overlay(lv_layer_t *layer, const buddy_ui_snapshot_t *s)
             text(layer, 56, y, 128, active ? COL_BG : COL_INK, menu[i], false, LV_TEXT_ALIGN_CENTER);
         }
     } else if (s->character == BUDDY_CHARACTER_CELEBRATE) {
-        panel(layer, 194, 86, COL_GREEN, "任务已完成",
-              "助手已完成当前任务。", "请在电脑上查看结果");
+        char body[64];
+        snprintf(body, sizeof(body), "进行中任务：%u", s->running);
+        panel(layer, 194, 86, COL_GREEN, "任务完成提醒",
+              body, "请在电脑上查看结果");
     }
 }
 

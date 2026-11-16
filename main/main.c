@@ -53,7 +53,7 @@ static void buddy_sound_task(void *context)
     for (;;) {
         bool success = true;
 
-        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        (void)ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
         bsp_audio_set_volume(BUDDY_SOUND_VOLUME);
         for (size_t offset = 0; offset < BUDDY_SOUND_SAMPLE_COUNT; offset += 160U) {
             for (size_t i = 0; i < 160U; ++i) {

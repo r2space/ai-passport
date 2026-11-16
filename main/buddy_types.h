@@ -160,6 +160,7 @@ typedef struct {
     unsigned secondary_window_minutes;
     uint64_t secondary_resets_at;
     uint64_t completion_sequence;
+    bool completion_event;
     bool present;
     bool available;
 } buddy_codex_usage_t;

@@ -65,6 +65,14 @@ static void test_codex_usage_snapshot_maps_and_validates_percentages(void)
     assert(event.heartbeat.codex_usage.secondary_used_percent == 62);
     assert(event.heartbeat.codex_usage.secondary_window_minutes == 10080);
     assert(event.heartbeat.codex_usage.completion_sequence == 7);
+    assert(!event.heartbeat.codex_usage.completion_event);
+    char live[1024];
+    snprintf(live, sizeof(live), "%.*s,\"completion_event\":true}}", (int)strlen(json) - 2, json);
+    assert(parse(live, &event) == BUDDY_EVENT_HEARTBEAT);
+    assert(event.heartbeat.codex_usage.completion_event);
+    snprintf(live, sizeof(live), "%.*s,\"completion_event\":\"invalid\"}}", (int)strlen(json) - 2, json);
+    assert(parse(live, &event) == BUDDY_EVENT_MALFORMED);
+
 
     assert(parse(
         "{\"total\":1,\"running\":0,\"waiting\":0,\"msg\":\"x\","

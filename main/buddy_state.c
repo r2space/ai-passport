@@ -364,12 +364,16 @@ static void buddy_apply_heartbeat(buddy_state_t *state, const buddy_heartbeat_t 
     if (level > state->highest_celebrated_level) {
         state->highest_celebrated_level = level;
         state->settings.highest_celebrated_level = level;
-        state->temporary_character = BUDDY_CHARACTER_CELEBRATE;
-        state->temporary_until_ms = now_ms + BUDDY_CELEBRATION_ANIMATION_MS;
+        bool celebrate = !heartbeat->codex_usage.present ||
+                         (heartbeat->connected && heartbeat->codex_usage.completion_event);
+        if (celebrate) {
+            state->temporary_character = BUDDY_CHARACTER_CELEBRATE;
+            state->temporary_until_ms = now_ms + BUDDY_CELEBRATION_ANIMATION_MS;
+        }
         if (action != NULL) {
             action->type = BUDDY_ACTION_SETTINGS;
             action->settings = state->settings;
-            action->completion_sound = heartbeat->codex_usage.present && heartbeat->connected;
+            action->completion_sound = heartbeat->codex_usage.present && celebrate;
         }
         return;
     }

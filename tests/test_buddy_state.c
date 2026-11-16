@@ -105,6 +105,7 @@ static void test_codex_completion_sequence_celebrates_once(void)
 
     heartbeat.heartbeat.codex_usage.available = true;
     heartbeat.heartbeat.codex_usage.present = true;
+    heartbeat.heartbeat.codex_usage.completion_event = true;
     heartbeat.heartbeat.codex_usage.primary_used_percent = 20;
     heartbeat.heartbeat.codex_usage.secondary_used_percent = 60;
     heartbeat.heartbeat.codex_usage.completion_sequence = 5;
@@ -138,6 +139,29 @@ static void test_codex_completion_sequence_celebrates_once(void)
 
     heartbeat.heartbeat.codex_usage.completion_sequence = 7;
     buddy_state_reduce(&state, &heartbeat, 1005, &action);
+    assert(action.completion_sound);
+}
+
+static void test_codex_checkpoint_never_replays_old_completion(void)
+{
+    buddy_state_t state;
+    buddy_action_t action = {0};
+    buddy_event_t heartbeat = test_heartbeat_event(0, 0);
+    buddy_settings_snapshot_t settings = {.highest_celebrated_level = 4};
+
+    heartbeat.heartbeat.codex_usage.present = true;
+    heartbeat.heartbeat.codex_usage.completion_sequence = 10;
+    buddy_state_init(&state, &settings);
+    buddy_state_reduce(&state, &heartbeat, 1000, &action);
+    assert(state.highest_celebrated_level == 10);
+    assert(!action.completion_sound);
+    assert(state.character != BUDDY_CHARACTER_CELEBRATE);
+
+    heartbeat.heartbeat.codex_usage.completion_event = true;
+    buddy_state_reduce(&state, &heartbeat, 1001, &action);
+    assert(!action.completion_sound);
+    heartbeat.heartbeat.codex_usage.completion_sequence = 11;
+    buddy_state_reduce(&state, &heartbeat, 1002, &action);
     assert(action.completion_sound);
 }
 
@@ -992,6 +1016,7 @@ int main(void)
     test_offline_initialization();
     test_heartbeat_mapping();
     test_codex_completion_sequence_celebrates_once();
+    test_codex_checkpoint_never_replays_old_completion();
     test_character_priority();
     test_timeout_clears_prompt();
     test_heartbeat_does_not_overwrite_persisted_identity();
