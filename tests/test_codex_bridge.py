@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +14,38 @@ SPEC.loader.exec_module(codex_bridge)
 
 
 class CodexBridgeTests(unittest.TestCase):
+    def test_weekly_limit_in_primary_without_secondary(self) -> None:
+        usage = codex_bridge.normalize_rate_limits({"rateLimits": {
+            "primary": {"usedPercent": 6, "windowDurationMins": 10080, "resetsAt": 123},
+            "secondary": None,
+        }})
+        self.assertEqual(codex_bridge.weekly_usage_window(usage),
+                         {"used": 6, "duration": 10080, "reset": 123})
+        with tempfile.TemporaryDirectory() as directory:
+            watcher = codex_bridge.SessionWatcher(Path(directory))
+            wire = json.loads(codex_bridge.heartbeat_payload(usage, watcher))
+        self.assertEqual(wire["codex"]["primary_window"], 10080)
+        self.assertEqual(wire["codex"]["secondary_window"], 0)
+
+    def test_weekly_limit_in_secondary_with_five_hour_primary(self) -> None:
+        usage = codex_bridge.normalize_rate_limits({"rateLimits": {
+            "primary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": 111},
+            "secondary": {"usedPercent": 62, "windowDurationMins": 10080, "resetsAt": 456},
+        }})
+        self.assertEqual(codex_bridge.weekly_usage_window(usage),
+                         {"used": 62, "duration": 10080, "reset": 456})
+
+    def test_missing_weekly_data_does_not_become_zero_usage(self) -> None:
+        for primary in (None, {},
+                        {"usedPercent": 12, "windowDurationMins": 300},
+                        {"windowDurationMins": 10080},
+                        {"usedPercent": None, "windowDurationMins": 10080}):
+            with self.subTest(primary=primary):
+                usage = codex_bridge.normalize_rate_limits({"rateLimits": {
+                    "primary": primary, "secondary": None,
+                }})
+                self.assertIsNone(codex_bridge.weekly_usage_window(usage))
+
     def test_normalizes_codex_bucket(self) -> None:
         result = codex_bridge.normalize_rate_limits(
             {

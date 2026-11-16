@@ -8,6 +8,7 @@
 #include "buddy_font_zh.h"
 #include "buddy_sprite.h"
 #include "buddy_text_layout.h"
+#include "buddy_usage.h"
 #include "lvgl.h"
 
 #define UI_W 240
@@ -298,42 +299,31 @@ static void draw_home(lv_layer_t *layer, const buddy_ui_snapshot_t *s)
     char value[64];
     char reset[32];
     unsigned i;
-    const buddy_codex_usage_t *u = &s->codex_usage;
+    buddy_usage_window_t weekly;
+    bool available = buddy_usage_weekly(&s->codex_usage, &weekly);
     text(layer, 8, 44, 224, COL_ORANGE, "Codex 使用量", true, LV_TEXT_ALIGN_CENTER);
-    snprintf(value, sizeof(value), "进行中：%u 个任务", s->running);
+    snprintf(value, sizeof(value), "进行中任务：%u", s->running);
     text(layer, 8, 64, 224, s->running > 0 ? COL_GREEN : COL_DIM,
          value, false, LV_TEXT_ALIGN_CENTER);
-    if (!u->available) {
-        wrapped_text(layer, 22, 113, 196, COL_INK,
+    box(layer, 8, 88, 224, 178, lv_color_hex(0x151719), COL_LINE, 1, 3);
+    text(layer, 18, 103, 204, COL_INK, "7 天窗口", false, LV_TEXT_ALIGN_CENTER);
+    if (!available) {
+        text(layer, 18, 137, 204, COL_DIM, "剩余 --", true, LV_TEXT_ALIGN_CENTER);
+        wrapped_text(layer, 22, 190, 196, COL_DIM,
                      "暂未获取使用量。\n请保持电脑端桥接程序运行。", 5);
     } else {
-        unsigned primary_remaining = 100U - u->primary_used_percent;
-        unsigned secondary_remaining = 100U - u->secondary_used_percent;
-        box(layer, 8, 80, 224, 91, lv_color_hex(0x151719), COL_LINE, 1, 3);
-        text(layer, 18, 93, 100, COL_INK, "5 小时窗口", false, LV_TEXT_ALIGN_LEFT);
-        snprintf(value, sizeof(value), "剩余 %u%%", primary_remaining);
-        text(layer, 116, 93, 106, primary_remaining < 20U ? COL_RED : COL_GREEN,
-             value, false, LV_TEXT_ALIGN_RIGHT);
-        for (i = 0; i < 10; ++i) {
-            bool on = i * 10U < primary_remaining;
-            box(layer, 18 + (int)i * 20, 122, 16, 13, on ? COL_GREEN : COL_LINE,
-                on ? COL_GREEN : COL_LINE, 0, 1);
-        }
-        usage_reset_text(reset, sizeof(reset), u->primary_resets_at, s);
-        text(layer, 18, 147, 204, COL_DIM, reset, false, LV_TEXT_ALIGN_LEFT);
+        unsigned remaining = 100U - weekly.used_percent;
+        lv_color_t color = remaining < 20U ? COL_RED : COL_GREEN;
 
-        box(layer, 8, 178, 224, 91, lv_color_hex(0x151719), COL_LINE, 1, 3);
-        text(layer, 18, 191, 100, COL_INK, "7 天窗口", false, LV_TEXT_ALIGN_LEFT);
-        snprintf(value, sizeof(value), "剩余 %u%%", secondary_remaining);
-        text(layer, 116, 191, 106, secondary_remaining < 20U ? COL_RED : COL_YELLOW,
-             value, false, LV_TEXT_ALIGN_RIGHT);
+        snprintf(value, sizeof(value), "剩余 %u%%", remaining);
+        text(layer, 18, 137, 204, color, value, true, LV_TEXT_ALIGN_CENTER);
         for (i = 0; i < 10; ++i) {
-            bool on = i * 10U < secondary_remaining;
-            box(layer, 18 + (int)i * 20, 220, 16, 13, on ? COL_YELLOW : COL_LINE,
-                on ? COL_YELLOW : COL_LINE, 0, 1);
+            bool on = i * 10U < remaining;
+            box(layer, 18 + (int)i * 20, 174, 16, 18, on ? color : COL_LINE,
+                on ? color : COL_LINE, 0, 1);
         }
-        usage_reset_text(reset, sizeof(reset), u->secondary_resets_at, s);
-        text(layer, 18, 245, 204, COL_DIM, reset, false, LV_TEXT_ALIGN_LEFT);
+        usage_reset_text(reset, sizeof(reset), weekly.resets_at, s);
+        text(layer, 18, 222, 204, COL_DIM, reset, false, LV_TEXT_ALIGN_CENTER);
     }
     text(layer, 8, 297, 224, COL_DIM, BUDDY_ACTION_HOME, false, LV_TEXT_ALIGN_CENTER);
 }
@@ -349,21 +339,21 @@ static void draw_info(lv_layer_t *layer, const buddy_ui_snapshot_t *s)
     text(layer, 174, 43, 52, COL_DIM, page, false, LV_TEXT_ALIGN_RIGHT);
     rule(layer, 14, 66, 212, COL_LINE);
     switch (p) {
-    case 0: snprintf(body, sizeof(body), "你的桌面助手。\n\n显示 5 小时与 7 天使用量，\n并在任务完成时提醒你。"); break;
+    case 0: snprintf(body, sizeof(body), "你的桌面助手。\n\n显示 7 天使用量，\n并在任务完成时提醒你。"); break;
     case 1: snprintf(body, sizeof(body), "上键：切换界面\n下键：翻页或拒绝\n确认键：允许或更改\n长按确认键：打开菜单"); break;
-    case 2:
-        if (s->codex_usage.available) {
+    case 2: {
+        buddy_usage_window_t weekly;
+        if (buddy_usage_weekly(&s->codex_usage, &weekly)) {
             snprintf(body, sizeof(body),
-                     "任务数：%u\n运行中：%u\n\n5 小时剩余：%u%%\n7 天剩余：%u%%",
-                     s->total, s->running,
-                     100U - s->codex_usage.primary_used_percent,
-                     100U - s->codex_usage.secondary_used_percent);
+                     "任务数：%u\n运行中：%u\n\n7 天剩余：%u%%",
+                     s->total, s->running, 100U - weekly.used_percent);
         } else {
             snprintf(body, sizeof(body),
-                     "任务数：%u\n运行中：%u\n\n5 小时剩余：--\n7 天剩余：--",
+                     "任务数：%u\n运行中：%u\n\n7 天剩余：--",
                      s->total, s->running);
         }
         break;
+    }
     case 3: snprintf(body, sizeof(body), "名称\n%s\n\n所有者\n%s\n\n屏幕：240 × 320", s->name[0] ? s->name : "Codex 助手", s->owner[0] ? s->owner : "-"); break;
     case 4: snprintf(body, sizeof(body), "%s\n\n%s\n%s\n\n请在电脑上运行\nCodex 桥接程序", s->name[0] ? s->name : "Codex 助手", s->ble_connected ? "已连接" : "正在广播", s->ble_encrypted ? "连接已加密" : "连接未加密"); break;
     default: snprintf(body, sizeof(body), "Codex 使用量助手\n\n适用于 FoloToy AI Passport\nESP32-C3 硬件\n\n基于公开的 Buddy 参考分支"); break;

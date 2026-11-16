@@ -116,10 +116,29 @@ static void test_codex_completion_sequence_celebrates_once(void)
     assert(action.type == BUDDY_ACTION_SETTINGS);
     assert(state.character == BUDDY_CHARACTER_CELEBRATE);
     assert(state.codex_usage.primary_used_percent == 20);
+    assert(action.completion_sound);
 
     buddy_state_reduce(&state, &heartbeat, 1001, &action);
     assert(action.type == BUDDY_ACTION_UI_REFRESH);
     assert(state.highest_celebrated_level == 5);
+    assert(!action.completion_sound);
+
+    heartbeat.heartbeat.codex_usage.completion_sequence = 4;
+    buddy_state_reduce(&state, &heartbeat, 1002, &action);
+    assert(!action.completion_sound);
+
+    heartbeat.heartbeat.codex_usage.completion_sequence = 6;
+    heartbeat.heartbeat.connected = false;
+    buddy_state_reduce(&state, &heartbeat, 1003, &action);
+    assert(!action.completion_sound);
+
+    heartbeat.heartbeat.connected = true;
+    buddy_state_reduce(&state, &heartbeat, 1004, &action);
+    assert(!action.completion_sound);
+
+    heartbeat.heartbeat.codex_usage.completion_sequence = 7;
+    buddy_state_reduce(&state, &heartbeat, 1005, &action);
+    assert(action.completion_sound);
 }
 
 static void test_character_priority(void)

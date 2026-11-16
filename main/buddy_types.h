@@ -247,6 +247,7 @@ typedef struct {
     uint32_t connection_generation;
     bool ble_enabled;
     bool confirmation_acknowledge;
+    bool completion_sound;
 } buddy_action_t;
 
 typedef struct {

@@ -156,20 +156,43 @@ def normalize_rate_limits(response: dict[str, Any]) -> dict[str, Any]:
 
     def window(name: str) -> dict[str, int]:
         value = snapshot.get(name)
-        if not isinstance(value, dict):
-            return {"used": 0, "duration": 0, "reset": 0}
+        empty = {"used": 0, "duration": 0, "reset": 0}
+        if not isinstance(value, dict) or value.get("usedPercent") is None:
+            return empty
+        try:
+            used = int(value["usedPercent"])
+            duration = int(value.get("windowDurationMins") or 0)
+            reset = int(value.get("resetsAt") or 0)
+        except (ValueError, TypeError, OverflowError):
+            return empty
+        if duration <= 0:
+            return empty
         return {
-            "used": min(100, max(0, int(value.get("usedPercent", 0)))),
-            "duration": max(0, int(value.get("windowDurationMins") or 0)),
-            "reset": max(0, int(value.get("resetsAt") or 0)),
+            "used": min(100, max(0, used)),
+            "duration": duration,
+            "reset": max(0, reset),
         }
 
+    primary = window("primary")
+    secondary = window("secondary")
     return {
         "plan": str(snapshot.get("planType") or "unknown")[:31],
-        "primary": window("primary"),
-        "secondary": window("secondary"),
-        "available": bool(snapshot.get("primary") or snapshot.get("secondary")),
+        "primary": primary,
+        "secondary": secondary,
+        "available": bool(primary["duration"] or secondary["duration"]),
     }
+
+
+def weekly_usage_window(usage: dict[str, Any]) -> dict[str, int] | None:
+    """Find a real 7-day limit by duration, independently of the API slot."""
+    if not usage.get("available"):
+        return None
+    for name in ("primary", "secondary"):
+        value = usage.get(name)
+        if (isinstance(value, dict) and value.get("duration") == 10080
+                and isinstance(value.get("used"), int) and 0 <= value["used"] <= 100):
+            return value
+    return None
 
 
 def roll_expired_usage_windows(
@@ -481,15 +504,9 @@ async def bridge_loop(args: argparse.Namespace) -> None:
                 flush=True,
             )
         running_count = max(running_count, watcher.running_count)
-        print(
-            "用量数据：可用=%s，5小时已用=%s%%，7天已用=%s%%"
-            % (
-                bool(usage.get("available")),
-                usage.get("primary", {}).get("used", 0),
-                usage.get("secondary", {}).get("used", 0),
-            ),
-            flush=True,
-        )
+        weekly = weekly_usage_window(usage)
+        print("用量数据：7天已用=%s%%" % weekly["used"] if weekly is not None
+              else "用量数据：7天窗口暂不可用", flush=True)
         print(f"正在进行的任务：{running_count}", flush=True)
         if args.dry_run:
             print(heartbeat_payload(usage, watcher, running_count).decode().rstrip())

@@ -3,6 +3,16 @@ project(buddy_host_tests C)
 
 enable_testing()
 
+add_executable(test_buddy_usage test_buddy_usage.c ../main/buddy_usage.c)
+target_include_directories(test_buddy_usage PRIVATE ../main)
+target_compile_options(test_buddy_usage PRIVATE -Wall -Wextra -Werror)
+add_test(NAME buddy_usage COMMAND test_buddy_usage)
+
+add_executable(test_buddy_sound_pcm test_buddy_sound_pcm.c ../main/buddy_sound_pcm.c)
+target_include_directories(test_buddy_sound_pcm PRIVATE ../main)
+target_compile_options(test_buddy_sound_pcm PRIVATE -Wall -Wextra -Werror)
+add_test(NAME buddy_sound_pcm COMMAND test_buddy_sound_pcm)
+
 if(NOT DEFINED ENV{IDF_PATH} OR "$ENV{IDF_PATH}" STREQUAL "")
     message(FATAL_ERROR "IDF_PATH must point to an ESP-IDF checkout")
 endif()

@@ -369,6 +369,7 @@ static void buddy_apply_heartbeat(buddy_state_t *state, const buddy_heartbeat_t 
         if (action != NULL) {
             action->type = BUDDY_ACTION_SETTINGS;
             action->settings = state->settings;
+            action->completion_sound = heartbeat->codex_usage.present && heartbeat->connected;
         }
         return;
     }

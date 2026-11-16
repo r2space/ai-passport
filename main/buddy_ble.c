@@ -389,7 +389,10 @@ static int buddy_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
 {
     struct os_mbuf *mbuf;
     buddy_rx_context_t rx_context;
+    struct ble_gap_conn_desc description = {0};
     bool accept_write;
+    bool security_recovered;
+    bool link_secure;
 
     (void)attr_handle;
     (void)arg;
@@ -401,15 +404,47 @@ static int buddy_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_UNLIKELY;
     }
 
+    /* Authorize against the host's current connection rather than relying
+     * solely on the cached GAP event state,
+     * retaining every authentication, bonding and key-size requirement. */
+    link_secure = ble_gap_conn_find(conn_handle, &description) == 0 &&
+                  buddy_ble_link_is_secure(description.sec_state.encrypted,
+                                           description.sec_state.authenticated,
+                                           description.sec_state.bonded,
+                                           description.sec_state.key_size);
     xSemaphoreTake(s_ble.mutex, portMAX_DELAY);
     accept_write = buddy_ble_transport_available(s_ble.start_requested,
                                                  s_ble.stop_pending) &&
-                   s_ble.conn_handle == conn_handle && s_ble.secure;
+                   !s_ble.delete_bonds_pending &&
+                   s_ble.conn_handle == conn_handle && link_secure;
+    security_recovered = accept_write && !s_ble.secure;
+    if (accept_write) {
+        s_ble.encrypted = true;
+        s_ble.secure = true;
+    }
     rx_context.conn_handle = conn_handle;
     rx_context.generation = s_ble.connection_generation;
     xSemaphoreGive(s_ble.mutex);
     if (!accept_write) {
+        ESP_LOGW(s_tag, "RX security rejected: encrypted=%u authenticated=%u bonded=%u key_bytes=%u",
+                 (unsigned)description.sec_state.encrypted,
+                 (unsigned)description.sec_state.authenticated,
+                 (unsigned)description.sec_state.bonded,
+                 (unsigned)description.sec_state.key_size);
         return BLE_ATT_ERR_INSUFFICIENT_ENC;
+    }
+    if (security_recovered) {
+        const buddy_ble_event_t event = {
+            .type = BUDDY_BLE_EVENT_ENCRYPTION,
+            .data.encryption = {
+                .encrypted = true,
+                .authenticated = true,
+                .bonded = true,
+                .connection_generation = rx_context.generation,
+            },
+        };
+        buddy_emit(&event);
+        ESP_LOGI(s_tag, "RX synchronized secured connection state");
     }
 
     for (mbuf = context->om; mbuf != NULL; mbuf = SLIST_NEXT(mbuf, om_next)) {

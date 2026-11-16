@@ -3,12 +3,39 @@
 **简体中文** · [English](README.md)
 
 这个固件把 FoloToy AI Passport 变成一个注重隐私的 Codex 桌面伙伴：显示当前
-5 小时与 7 天窗口的剩余比例、以进度条展示余量、显示正在进行的任务数，并在
+7 天窗口的剩余比例、以单条进度条展示余量、显示正在进行的任务数，并在
 Codex 生成最终答复时显示 6 秒钟的 **任务已完成** 提示。首页右上角同时显示电量。
 
-当前发布版本：**0.1.0**。
+上游发布版本：**0.1.0**。本地构建版本：**0.1.0-weekly1**。
 
-## 下载与安装
+按 10080 分钟的实际时长识别任一 API 字段中的 7 天窗口；缺少周用量时显示 `--`。
+首页与用量详情页均移除 5 小时区域。
+本地版本在收到新的 Codex 任务完成事件时播放一次 200 毫秒的
+扬声器提示音。音量固定为 50%；重复心跳不会重复播放。
+接收消息时也会核对重连后的实时安全链路状态。
+
+## 源码与开发
+
+本应用在 [`r2space/ai-passport` 的 `codex/usage-buddy` 分支](https://github.com/r2space/ai-passport/tree/codex/usage-buddy)
+维护，基于 [`zt20/codex-usage-ai-passport`](https://github.com/zt20/codex-usage-ai-passport)
+的 `6b6b979d2b9df3e9f6f105445b35c626a38fcce1`。
+
+```bash
+git clone --branch codex/usage-buddy https://github.com/r2space/ai-passport.git codex-usage-ai-passport
+cd codex-usage-ai-passport
+python3 -m venv .venv
+.venv/bin/pip install -r tools/requirements-codex-bridge.txt
+.venv/bin/python tools/codex_bridge.py
+```
+
+固件使用本分支源码与 ESP-IDF 5.5.3 构建；主机测试命令见英文说明。
+macOS 可用 `tools/run-codex-bridge.command` 从同一 `.venv` 启动，不安装登录服务。
+`dependencies.lock` 纳入版本管理，构建产物、虚拟环境与日志留在本地。
+[踩坑记录](docs/reference/r2space/ble-completion-sound-lessons.zh_CN.md)。
+
+## 上游原版下载参考
+
+下列 v0.1.0 发布包不含本分支的周窗口、提示音和蓝牙修复，请使用本分支构建的固件与桥接源码。
 
 - [下载小助手固件和 macOS 桥接程序](https://github.com/zt20/codex-usage-ai-passport/releases/tag/v0.1.0)
 - [查看完整中文安装、蓝牙配对与排障说明](docs/codex-usage-installation.zh_CN.md)

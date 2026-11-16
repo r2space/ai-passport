@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 
+#include "bsp_audio.h"
 #include "bsp_battery.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
@@ -25,6 +26,7 @@
 #include "buddy_orchestrator.h"
 #include "buddy_protocol.h"
 #include "buddy_settings.h"
+#include "buddy_sound_pcm.h"
 #include "buddy_state.h"
 #include "buddy_ui.h"
 
@@ -40,6 +42,56 @@
 #define BUDDY_BATTERY_SAMPLE_MS 10000ULL
 #define BUDDY_SETTINGS_SERVICE_MS 1000ULL
 #define BUDDY_SCREENSHOT_STACK_SIZE 8192U
+
+static TaskHandle_t s_sound_task;
+
+static void buddy_sound_task(void *context)
+{
+    int16_t pcm[160];
+
+    (void)context;
+    for (;;) {
+        bool success = true;
+
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        bsp_audio_set_volume(BUDDY_SOUND_VOLUME);
+        for (size_t offset = 0; offset < BUDDY_SOUND_SAMPLE_COUNT; offset += 160U) {
+            for (size_t i = 0; i < 160U; ++i) {
+                pcm[i] = buddy_sound_sample(offset + i);
+            }
+            if (bsp_audio_write(pcm, sizeof(pcm)) != ESP_OK) {
+                success = false;
+                break;
+            }
+        }
+        /* BSP queues 6 x 240 frames: allow the 90 ms DMA tail to finish. */
+        vTaskDelay(pdMS_TO_TICKS(100));
+        bsp_audio_set_volume(0);
+        if (success) {
+            ESP_LOGI("buddy_sound", "Completion sound played");
+            ESP_LOGI("buddy_sound", "Task stack headroom: %u",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        } else {
+            ESP_LOGW("buddy_sound", "Completion sound playback failed");
+        }
+    }
+}
+
+static void buddy_sound_init(void)
+{
+    if (bsp_audio_init() != ESP_OK ||
+        bsp_audio_set_format(BUDDY_SOUND_SAMPLE_RATE, 16, 1) != ESP_OK) {
+        ESP_LOGW("buddy_sound", "Audio unavailable; visual alerts remain active");
+        return;
+    }
+    bsp_audio_set_volume(0);
+    /* Codec I/O and newlib logging exceed the original 3 KB stack on this target. */
+    /* Stay above LVGL (priority 4) while blocked I2S writes yield the CPU. */
+    if (xTaskCreate(buddy_sound_task, "buddy_sound", 4096, NULL, 6,
+                    &s_sound_task) != pdPASS) {
+        ESP_LOGW("buddy_sound", "Sound task creation failed");
+    }
+}
 
 typedef enum {
     BUDDY_CONTROL_KEY,
@@ -828,6 +880,9 @@ static bool buddy_execute_action(buddy_state_t *state, const buddy_action_t *act
 {
     buddy_orchestrator_ops_t ops = buddy_orchestrator_ops(state);
 
+    if (action->completion_sound && s_sound_task != NULL) {
+        xTaskNotifyGive(s_sound_task);
+    }
     if (action->type == BUDDY_ACTION_DISPLAY_BACKLIGHT) {
         bsp_display_backlight(action->brightness_percent);
         memset(result_event, 0, sizeof(*result_event));
@@ -1096,6 +1151,7 @@ void app_main(void)
     }
     bsp_display_backlight(100);
     s_initial_battery_available = bsp_battery_init() == ESP_OK;
+    buddy_sound_init();
 
     if (buddy_settings_init() != ESP_OK || buddy_settings_load(&s_initial_settings) != ESP_OK) {
         ESP_LOGE(TAG, "settings initialization failed");

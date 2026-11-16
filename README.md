@@ -3,15 +3,38 @@
 [简体中文](README.zh_CN.md) · **English**
 
 This firmware turns FoloToy AI Passport into a private Codex desk companion. It shows the
-remaining share of the current 5-hour and 7-day Codex limits as progress bars, shows the
+remaining share of the 7-day Codex limit as a single progress bar, shows the
 number of active tasks, and displays a six-second **Task complete** celebration when Codex
 writes a final answer. The top-right status area also shows the battery level.
 
-Current release: **0.1.0**.
+Upstream release: **0.1.0**. Development build: **0.1.0-weekly1**.
+
+The weekly window is selected by its 10080-minute duration in either API slot;
+missing weekly data shows `--`. The five-hour panel is removed from the home and info pages.
+The local variant adds one 200 ms speaker tone when a new
+Codex completion arrives. Its volume is fixed at 50%; repeated heartbeats do not replay it.
+RX authorization also reconciles the current secured link after reconnecting.
 
 The implementation starts from this repository's `demo/claude-buddy-port` reference and
 keeps its bounded state machine, pixel UI, encrypted Nordic UART BLE transport, bonding,
 and reconnect behavior. A local bridge translates Codex data into the device protocol.
+
+## Source and development
+
+This application is maintained on the `codex/usage-buddy` branch of
+[`r2space/ai-passport`](https://github.com/r2space/ai-passport/tree/codex/usage-buddy),
+based on [`zt20/codex-usage-ai-passport`](https://github.com/zt20/codex-usage-ai-passport)
+revision `6b6b979d2b9df3e9f6f105445b35c626a38fcce1`.
+
+```bash
+git clone --branch codex/usage-buddy https://github.com/r2space/ai-passport.git codex-usage-ai-passport
+cd codex-usage-ai-passport
+```
+
+Build the firmware and run `tools/codex_bridge.py` from this branch. The original
+v0.1.0 release packages do not contain this branch's weekly-window and sound fixes.
+Keep `dependencies.lock` tracked; build output, virtual environments and logs stay local.
+[Debugging lessons](docs/reference/r2space/ble-completion-sound-lessons.md).
 
 ## Data flow and privacy
 
@@ -27,7 +50,7 @@ JSONL record type, role, and phase from local session files to detect a user tur
 read or copy Codex authentication tokens.
 
 Codex reports usage as percentages rather than absolute message counts, so the screen
-shows `LEFT = 100 - usedPercent` for each available window. If the service is temporarily
+shows `LEFT = 100 - usedPercent` for the available weekly window. If the service is temporarily
 unavailable when a window resets, the bridge advances to the next period locally and
 reconciles after connectivity returns. A never-observed snapshot is shown as unavailable.
 
@@ -54,6 +77,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r tools/requirements-codex-bridge.txt
 .venv/bin/python tools/codex_bridge.py
 ```
+
+On macOS, `tools/run-codex-bridge.command` starts the bridge in the same `.venv`
+without installing a login service.
 
 Useful options:
 
@@ -87,8 +113,9 @@ python3 -m unittest tests/test_codex_bridge.py
 ```
 
 Firmware build success is not hardware validation. On-device acceptance must separately
-verify pairing, both usage windows, reset countdowns, running/ready state, completion
-celebration, reconnect, battery display, and a sustained BLE connection.
+verify pairing, weekly selection in either API slot, missing-data display, reset
+countdowns, running/ready state, the completion tone, reconnect, battery display,
+and a sustained BLE connection.
 
 ## Attribution
 
